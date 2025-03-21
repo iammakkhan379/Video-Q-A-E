@@ -1,0 +1,148 @@
+// pages/index.tsx
+import { useState, useCallback } from 'react';
+import { useDropzone } from 'react-dropzone';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { Canvas } from 'canvas';
+
+const VideoEnhancer = () => {
+  const [file, setFile] = useState<File | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [enhancedUrl, setEnhancedUrl] = useState<string | null>(null);
+  const [params, setParams] = useState({
+    sharpness: 1.0,
+    contrast: 1.0,
+    resolutionScale: 1.0,
+  });
+
+  const { getRootProps, getInputProps } = useDropzone({
+    accept: {
+      'image/*': ['.jpg', '.jpeg', '.png'],
+      'video/*': ['.mp4', '.webm', '.mov'],
+    },
+    onDrop: (acceptedFiles) => setFile(acceptedFiles[0]),
+  });
+
+  const processImage = useCallback(async (file: File) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    
+    img.src = URL.createObjectURL(file);
+    await new Promise((resolve) => (img.onload = resolve));
+
+    // Apply enhancements
+    canvas.width = img.width * params.resolutionScale;
+    canvas.height = img.height * params.resolutionScale;
+    
+    ctx.filter = `
+      contrast(${params.contrast * 100}%)
+      sharpness(${params.sharpness * 100}%)
+    `;
+    
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    
+    return new Promise<string>((resolve) => {
+      canvas.toBlob((blob) => {
+        resolve(URL.createObjectURL(blob));
+      }, 'image/jpeg', 0.9);
+    });
+  }, [params]);
+
+  const processVideo = useCallback(async (file: File) => {
+    const ffmpeg = new FFmpeg();
+    await ffmpeg.load();
+    
+    const inputName = 'input.mp4';
+    const outputName = 'output.mp4';
+    
+    ffmpeg.writeFile(inputName, await file.arrayBuffer());
+    
+    await ffmpeg.exec([
+      '-i', inputName,
+      '-vf', `scale=iw*${params.resolutionScale}:ih*${params.resolutionScale},
+              unsharp=5:5:${params.sharpness},
+              eq=contrast=${params.contrast}`,
+      '-c:a', 'copy',
+      outputName
+    ]);
+    
+    const data = await ffmpeg.readFile(outputName);
+    return URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
+  }, [params]);
+
+  const handleEnhance = async () => {
+    if (!file) return;
+    
+    try {
+      setProgress(0);
+      const isVideo = file.type.startsWith('video/');
+      
+      const enhanced = isVideo 
+        ? await processVideo(file)
+        : await processImage(file);
+
+      setEnhancedUrl(enhanced);
+    } finally {
+      setProgress(100);
+    }
+  };
+
+  return (
+    <div className="container mx-auto p-4">
+      <div {...getRootProps()} className="dropzone">
+        <input {...getInputProps()} />
+        <p>Drag & drop files here, or click to select</p>
+      </div>
+
+      {file && (
+        <div className="controls">
+          <div className="slider">
+            <label>Sharpness</label>
+            <input
+              type="range"
+              min="0.5"
+              max="2.0"
+              step="0.1"
+              value={params.sharpness}
+              onChange={(e) => setParams({...params, sharpness: parseFloat(e.target.value)})}
+            />
+          </div>
+
+          <div className="slider">
+            <label>Contrast</label>
+            <input
+              type="range"
+              min="0.5"
+              max="2.0"
+              step="0.1"
+              value={params.contrast}
+              onChange={(e) => setParams({...params, contrast: parseFloat(e.target.value)})}
+            />
+          </div>
+
+          <button onClick={handleEnhance} disabled={progress > 0}>
+            Enhance Now
+          </button>
+
+          {progress > 0 && (
+            <progress value={progress} max="100" className="progress" />
+          )}
+
+          {enhancedUrl && (
+            <div className="result">
+              <a
+                href={enhancedUrl}
+                download={`enhanced_${file.name}`}
+                className="download-button"
+              >
+                Download Enhanced File
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default VideoEnhancer;
